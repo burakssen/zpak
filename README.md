@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Efficient Compression**: Supports LZ4, Zstd, and LZMA compression algorithms.
+- **Efficient Compression**: Supports LZ4 and Zstd compression algorithms.
 - **Fast Archiving**: Quickly packs directories into compact archive files.
 - **Simple CLI**: Minimal, intuitive commands for encoding and decoding.
 - **Cross-Platform**: Built with Zig, ensuring portability across various operating systems.
@@ -37,7 +37,7 @@ You’ll need Zig installed (matching the version this project was developed wit
 # Encode a directory into an archive (default: LZ4 compression)
 zpak encode <input_dir> <output_file>
 
-# Encode with a specific algorithm: lz4, zstd, lzma
+# Encode with a specific algorithm: lz4, zstd
 zpak encode <input_dir> <output_file> <algorithm>
 
 # Decode an archive into a directory
