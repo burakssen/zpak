@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const zpak_mod = b.createModule(.{
+    const zpak_mod = b.addModule("zpak", .{
         .root_source_file = b.path("src/zpak/zpak.zig"),
         .target = target,
         .optimize = optimize,
