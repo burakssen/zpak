@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
     zpak_mod.linkSystemLibrary("zstd", .{});
 
     const exe_mod = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("src/cli/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -40,6 +40,15 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
+
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "../docs",
+    });
+
+    const docs_step = b.step("docs", "Install docs into zig-out/docs");
+    docs_step.dependOn(&install_docs.step);
 
     const run_cmd = b.addRunArtifact(exe);
 

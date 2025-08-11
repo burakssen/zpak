@@ -1,9 +1,9 @@
 const std = @import("std");
-const Serializer = @import("serializer.zig");
-const Compressor = @import("compressor.zig");
-const Archive = @import("archive.zig");
-const FileUtils = @import("file_utils.zig");
-const Manifest = @import("manifest.zig");
+const Serializer = @import("core/serializer.zig");
+const Compressor = @import("core/compressor.zig").Compressor;
+const Archive = @import("core/archive.zig");
+const FileUtils = @import("io/file_utils.zig");
+const Manifest = @import("core/manifest.zig");
 
 const Decoder = @This();
 const log = std.log.scoped(.decoder);
@@ -21,6 +21,7 @@ const DecoderError = error{
     UnsupportedType,
     CorruptedData,
     UnsupportedManifestVersion,
+    AlgorithmNotFound,
 } ||
     std.mem.Allocator.Error ||
     FileUtils.FileError ||
@@ -28,12 +29,12 @@ const DecoderError = error{
     Compressor.CompressionError ||
     Serializer.SerializerError;
 
-pub fn init(allocator: std.mem.Allocator) Decoder {
+pub fn init(allocator: std.mem.Allocator) DecoderError!Decoder {
     log.debug("Initializing decoder", .{});
     return .{
         .allocator = allocator,
         .serializer = Serializer.init(allocator),
-        .compressor = Compressor.init(allocator),
+        .compressor = try Compressor.init(allocator),
         .file_utils = FileUtils.init(allocator),
     };
 }
@@ -49,7 +50,9 @@ pub fn decodeDir(self: *Decoder, archive_path: []const u8, output_dir: []const u
     log.debug("Decoding directory archive: {s} -> {s}", .{ archive_path, output_dir });
 
     // Check if archive file exists
-    if (!FileUtils.fileExists(archive_path)) {
+    const archive_exists = FileUtils.fileExists(archive_path);
+
+    if (!archive_exists) {
         log.err("Archive file does not exist: {s}", .{archive_path});
         return error.PathNotFound;
     }
@@ -58,13 +61,11 @@ pub fn decodeDir(self: *Decoder, archive_path: []const u8, output_dir: []const u
     const compressed_data = try self.file_utils.readFile(archive_path);
     defer self.allocator.free(compressed_data);
 
-    // Attempt to decompress with a default or assumed algorithm
-    // OR, even better, you should first read an uncompressed header
-    // that tells you what algorithm to use. For now, we'll assume the encoder's default.
-    const algorithm = try self.compressor.detectCompressionAlgorithm(compressed_data);
+    // Try to detect compression algorithm from the archive header/manifest
+    const algorithm_info = try self.detectArchiveAlgorithm(compressed_data);
 
     // Decompress the archive
-    const decompressed = try self.compressor.decompressWithAlgorithm(compressed_data, algorithm);
+    const decompressed = try self.compressor.decompressWithName(compressed_data, algorithm_info.name, null);
     defer self.allocator.free(decompressed);
 
     // Parse the archive structure from the now uncompressed data
@@ -86,19 +87,21 @@ pub fn decodeDir(self: *Decoder, archive_path: []const u8, output_dir: []const u
 pub fn listArchiveContents(self: *Decoder, archive_path: []const u8) DecoderError![]const u8 {
     log.debug("Listing contents of archive: {s}", .{archive_path});
 
-    if (!FileUtils.fileExists(archive_path)) {
+    const archive_exists = FileUtils.fileExists(archive_path);
+
+    if (!archive_exists) {
         return error.PathNotFound;
     }
 
     const compressed_data = try self.file_utils.readFile(archive_path);
     defer self.allocator.free(compressed_data);
 
-    const manifest = try Archive.peekManifest(self.allocator, compressed_data);
+    const algorithm_info = try self.detectArchiveAlgorithm(compressed_data);
 
-    const decompressed = try self.compressor.decompressWithAlgorithm(compressed_data, manifest.algorithm);
-    defer self.allocator.free(decompressed);
+    const decompressed = try self.compressor.decompressWithName(compressed_data, algorithm_info.name, null);
+    defer self.allocator.free(decompressed.data);
 
-    var archive = try self.parseArchive(decompressed);
+    var archive = try self.parseArchive(decompressed.data);
     defer archive.deinit();
 
     var result = std.ArrayList(u8).init(self.allocator);
@@ -124,25 +127,27 @@ pub fn listArchiveContents(self: *Decoder, archive_path: []const u8) DecoderErro
 pub fn extractSingleFile(self: *Decoder, archive_path: []const u8, file_path: []const u8, output_path: []const u8) DecoderError!void {
     log.debug("Extracting single file: {s} -> {s}", .{ file_path, output_path });
 
-    if (!FileUtils.fileExists(archive_path)) {
+    const archive_exists = FileUtils.fileExists(archive_path);
+
+    if (!archive_exists) {
         return error.PathNotFound;
     }
 
     const compressed_data = try self.file_utils.readFile(archive_path);
     defer self.allocator.free(compressed_data);
 
-    const manifest = try Archive.peekManifest(self.allocator, compressed_data);
+    const algorithm_info = try self.detectArchiveAlgorithm(compressed_data);
 
-    const decompressed = try self.compressor.decompressWithAlgorithm(compressed_data, manifest.algorithm);
-    defer self.allocator.free(decompressed);
+    const decompressed = try self.compressor.decompressWithName(compressed_data, algorithm_info.name, null);
+    defer self.allocator.free(decompressed.data);
 
-    var archive = try self.parseArchive(decompressed);
+    var archive = try self.parseArchive(decompressed.data);
     defer archive.deinit();
 
     // Find the requested file
     for (archive.manifest.entries) |entry| {
         if (std.mem.eql(u8, entry.original_path, file_path)) {
-            try self.extractSingleEntry(&entry, decompressed, output_path);
+            try self.extractSingleEntry(&entry, decompressed.data, output_path);
             log.info("Extracted: {s} -> {s}", .{ file_path, output_path });
             return;
         }
@@ -150,6 +155,91 @@ pub fn extractSingleFile(self: *Decoder, archive_path: []const u8, file_path: []
 
     log.warn("File not found in archive: {s}", .{file_path});
     return error.PathNotFound;
+}
+
+pub fn verifyArchive(self: *Decoder, archive_path: []const u8) DecoderError!bool {
+    log.debug("Verifying archive integrity: {s}", .{archive_path});
+
+    const archive_exists = FileUtils.fileExists(archive_path);
+
+    if (!archive_exists) {
+        log.err("Archive file does not exist: {s}", .{archive_path});
+        return error.PathNotFound;
+    }
+
+    const compressed_data = try self.file_utils.readFile(archive_path);
+    defer self.allocator.free(compressed_data);
+
+    const algorithm_info = self.detectArchiveAlgorithm(compressed_data) catch |err| {
+        log.warn("Failed to detect compression algorithm: {}", .{err});
+        return false;
+    };
+
+    const decompressed = self.compressor.decompressWithName(compressed_data, algorithm_info.name, algorithm_info.level) catch |err| {
+        log.warn("Failed to decompress archive: {}", .{err});
+        return false;
+    };
+    defer self.allocator.free(decompressed.data);
+
+    var archive = self.parseArchive(decompressed.data) catch |err| {
+        log.warn("Failed to parse archive: {}", .{err});
+        return false;
+    };
+    defer archive.deinit();
+
+    // Verify all file checksums
+    const MANIFEST_SIZE_BYTES = 8;
+    const manifest_size = std.mem.readInt(u64, decompressed.data[0..MANIFEST_SIZE_BYTES][0..8], .little);
+    const data_start = MANIFEST_SIZE_BYTES + manifest_size;
+
+    for (archive.manifest.entries) |entry| {
+        if (!std.mem.startsWith(u8, entry.encoded_path, "offset:")) {
+            log.warn("Invalid encoded path format: {s}", .{entry.encoded_path});
+            return false;
+        }
+
+        const offset = std.fmt.parseInt(usize, entry.encoded_path[7..], 10) catch {
+            log.warn("Failed to parse offset from {s}", .{entry.encoded_path});
+            return false;
+        };
+
+        const actual_offset = data_start + offset;
+        if (actual_offset + entry.original_size > decompressed.data.len) {
+            log.warn("Invalid file bounds for {s}", .{entry.original_path});
+            return false;
+        }
+
+        const file_data = decompressed.data[actual_offset .. actual_offset + entry.original_size];
+        if (std.hash.Crc32.hash(file_data) != entry.checksum) {
+            log.warn("Checksum mismatch for {s}", .{entry.original_path});
+            return false;
+        }
+    }
+
+    log.info("Archive verification successful: {s}", .{archive_path});
+    return true;
+}
+
+// Private helper methods
+fn detectArchiveAlgorithm(self: *Decoder, compressed_data: []const u8) DecoderError!struct { name: []const u8, level: @import("compression/algorithm.zig").CompressionLevel } {
+    // This is a simplified version - you might want to store algorithm info in archive header
+    // For now, try to detect based on data patterns or use a default
+
+    // Try common algorithms in order of preference
+    const algorithms = self.compressor.listAvailableAlgorithms();
+
+    for (algorithms) |algo| {
+        // Try to decompress with each algorithm to see if it works
+        if (self.compressor.decompressWithName(compressed_data, algo.getName(), compressed_data.len)) |result| {
+            self.allocator.free(result);
+            return .{ .name = algo.getName(), .level = .medium };
+        } else |_| {
+            // Continue to next algorithm
+        }
+    }
+
+    // Default fallback
+    return .{ .name = "LZ4", .level = .medium };
 }
 
 fn deserialize(self: *Decoder, comptime T: type, data: []const u8) DecoderError!T {
@@ -220,108 +310,6 @@ fn deserializeStruct(self: *Decoder, comptime T: type, data: []const u8) Decoder
     }
 
     return result;
-}
-
-fn deserializeManifest(self: *Decoder, data: []const u8) DecoderError!Manifest {
-    var offset: usize = 0;
-
-    // Read version
-    if (offset + @sizeOf(u32) > data.len) {
-        log.err("Insufficient data for version field", .{});
-        return error.CorruptedData;
-    }
-    const version = std.mem.readInt(u32, data[offset .. offset + @sizeOf(u32)][0..4], .little);
-    offset += @sizeOf(u32);
-    log.debug("Manifest version: {}", .{version});
-
-    // Read entry count
-    if (offset + @sizeOf(usize) > data.len) {
-        log.err("Insufficient data for entry count", .{});
-        return error.CorruptedData;
-    }
-    const entry_count = std.mem.readInt(usize, data[offset .. offset + @sizeOf(usize)][0..@sizeOf(usize)], .little);
-    offset += @sizeOf(usize);
-    log.debug("Entry count: {}", .{entry_count});
-
-    if (entry_count == 0) {
-        return Manifest{
-            .version = version,
-            .entries = &.{},
-        };
-    }
-
-    const entries = try self.allocator.alloc(Manifest.ManifestEntry, entry_count);
-    errdefer {
-        // Clean up partially constructed entries
-        for (entries[0..]) |entry| {
-            if (entry.original_path.len > 0) self.allocator.free(entry.original_path);
-            if (entry.encoded_path.len > 0) self.allocator.free(entry.encoded_path);
-        }
-        self.allocator.free(entries);
-    }
-
-    for (entries, 0..) |*entry, i| {
-        log.debug("Deserializing entry {}/{}", .{ i + 1, entry_count });
-
-        // Read original_path length and data
-        if (offset + @sizeOf(usize) > data.len) {
-            log.err("Insufficient data for original_path length at entry {}", .{i});
-            return error.CorruptedData;
-        }
-        const original_path_len = std.mem.readInt(usize, data[offset .. offset + @sizeOf(usize)][0..@sizeOf(usize)], .little);
-        offset += @sizeOf(usize);
-
-        if (offset + original_path_len > data.len) {
-            log.err("Insufficient data for original_path at entry {}: need {}, have {}", .{ i, original_path_len, data.len - offset });
-            return error.CorruptedData;
-        }
-        const original_path = try self.allocator.dupe(u8, data[offset .. offset + original_path_len]);
-        offset += original_path_len;
-
-        // Read encoded_path length and data
-        if (offset + @sizeOf(usize) > data.len) {
-            log.err("Insufficient data for encoded_path length at entry {}", .{i});
-            return error.CorruptedData;
-        }
-        const encoded_path_len = std.mem.readInt(usize, data[offset .. offset + @sizeOf(usize)][0..@sizeOf(usize)], .little);
-        offset += @sizeOf(usize);
-
-        if (offset + encoded_path_len > data.len) {
-            log.err("Insufficient data for encoded_path at entry {}: need {}, have {}", .{ i, encoded_path_len, data.len - offset });
-            return error.CorruptedData;
-        }
-        const encoded_path = try self.allocator.dupe(u8, data[offset .. offset + encoded_path_len]);
-        offset += encoded_path_len;
-
-        // Read sizes and checksum
-        const remaining_size = 2 * @sizeOf(u64) + @sizeOf(u32);
-        if (offset + remaining_size > data.len) {
-            log.err("Insufficient data for sizes and checksum at entry {}: need {}, have {}", .{ i, remaining_size, data.len - offset });
-            return error.CorruptedData;
-        }
-
-        const original_size = std.mem.readInt(u64, data[offset .. offset + @sizeOf(u64)][0..8], .little);
-        offset += @sizeOf(u64);
-        const encoded_size = std.mem.readInt(u64, data[offset .. offset + @sizeOf(u64)][0..8], .little);
-        offset += @sizeOf(u64);
-        const checksum = std.mem.readInt(u32, data[offset .. offset + @sizeOf(u32)][0..4], .little);
-        offset += @sizeOf(u32);
-
-        entry.* = Manifest.ManifestEntry{
-            .original_path = original_path,
-            .encoded_path = encoded_path,
-            .original_size = original_size,
-            .encoded_size = encoded_size,
-            .checksum = checksum,
-        };
-
-        log.debug("Entry {}: {s} ({} bytes)", .{ i, original_path, original_size });
-    }
-
-    return Manifest{
-        .version = version,
-        .entries = entries,
-    };
 }
 
 fn extractArchive(self: *Decoder, archive: *const Archive, archive_data: []const u8, output_dir: []const u8) DecoderError!void {
@@ -412,11 +400,11 @@ fn extractSingleEntry(self: *Decoder, entry: *const Manifest.ManifestEntry, arch
     };
 }
 
-// Convenience method to verify archive integrity without extracting
-pub fn parseArchive(self: *Decoder, data: []const u8) DecoderError!Archive {
+// Parse archive from decompressed data
+fn parseArchive(self: *Decoder, data: []const u8) DecoderError!Archive {
     log.debug("Parsing archive data ({} bytes)", .{data.len});
 
-    // Delegate to Archive.parse which now has the proper implementation
+    // Delegate to Archive.parse which should have the proper implementation
     const archive = try Archive.parse(self.allocator, data);
 
     // Verify the manifest has entries
@@ -427,62 +415,4 @@ pub fn parseArchive(self: *Decoder, data: []const u8) DecoderError!Archive {
     }
 
     return archive;
-}
-
-pub fn verifyArchive(self: *Decoder, archive_path: []const u8) DecoderError!bool {
-    log.debug("Verifying archive integrity: {s}", .{archive_path});
-
-    if (!FileUtils.fileExists(archive_path)) {
-        log.err("Archive file does not exist: {s}", .{archive_path});
-        return error.PathNotFound;
-    }
-
-    const compressed_data = try self.file_utils.readFile(archive_path);
-    defer self.allocator.free(compressed_data);
-
-    const manifest = try Archive.peekManifest(self.allocator, compressed_data);
-
-    const decompressed = self.compressor.decompress(compressed_data, manifest.algorithm) catch |err| {
-        log.warn("Failed to decompress archive: {}", .{err});
-        return false;
-    };
-    defer self.allocator.free(decompressed);
-
-    var archive = self.parseArchive(decompressed) catch |err| {
-        log.warn("Failed to parse archive: {}", .{err});
-        return false;
-    };
-    defer archive.deinit();
-
-    // Verify all file checksums
-    const MANIFEST_SIZE_BYTES = 8;
-    const manifest_size = std.mem.readInt(u64, decompressed[0..MANIFEST_SIZE_BYTES][0..8], .little);
-    const data_start = MANIFEST_SIZE_BYTES + manifest_size;
-
-    for (archive.manifest.entries) |entry| {
-        if (!std.mem.startsWith(u8, entry.encoded_path, "offset:")) {
-            log.warn("Invalid encoded path format: {s}", .{entry.encoded_path});
-            return false;
-        }
-
-        const offset = std.fmt.parseInt(usize, entry.encoded_path[7..], 10) catch {
-            log.warn("Failed to parse offset from {s}", .{entry.encoded_path});
-            return false;
-        };
-
-        const actual_offset = data_start + offset;
-        if (actual_offset + entry.original_size > decompressed.len) {
-            log.warn("Invalid file bounds for {s}", .{entry.original_path});
-            return false;
-        }
-
-        const file_data = decompressed[actual_offset .. actual_offset + entry.original_size];
-        if (std.hash.Crc32.hash(file_data) != entry.checksum) {
-            log.warn("Checksum mismatch for {s}", .{entry.original_path});
-            return false;
-        }
-    }
-
-    log.info("Archive verification successful: {s}", .{archive_path});
-    return true;
 }
