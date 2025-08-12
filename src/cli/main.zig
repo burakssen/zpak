@@ -42,6 +42,8 @@ pub fn main() !void {
                     encoder.setDefaultAlgorithm("LZ4");
                 } else if (std.mem.eql(u8, algo, "zlib")) {
                     encoder.setDefaultAlgorithm("zlib");
+                } else if (std.mem.eql(u8, algo, "lzma")) {
+                    encoder.setDefaultAlgorithm("lzma");
                 } else {
                     std.log.err("Unknown algorithm: {s}. Available: lz4, zstd, zlib", .{algo});
                     return MyError.InvalidInput;

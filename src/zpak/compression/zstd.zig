@@ -5,12 +5,12 @@ const zstd_c = @cImport(@cInclude("zstd.h"));
 const CompressionLevel = algorithm.CompressionLevel;
 const CompressionError = algorithm.CompressionError;
 
-pub const ZstdAlgorithm = @This();
+pub const Zstd = @This();
 const ALGORITHM_ID: u8 = 2;
 const NAME = "zstd";
 const MAGIC_NUMBER = [4]u8{ 0x28, 0xB5, 0x2F, 0xFD };
 
-pub fn compress(self: *ZstdAlgorithm, allocator: std.mem.Allocator, data: []const u8, level: CompressionLevel) CompressionError![]u8 {
+pub fn compress(self: *Zstd, allocator: std.mem.Allocator, data: []const u8, level: CompressionLevel) CompressionError![]u8 {
     _ = self;
     if (data.len == 0) return try allocator.alloc(u8, 0);
 
@@ -39,7 +39,7 @@ pub fn compress(self: *ZstdAlgorithm, allocator: std.mem.Allocator, data: []cons
     return try allocator.realloc(buffer, compressed_size);
 }
 
-pub fn decompress(self: *ZstdAlgorithm, allocator: std.mem.Allocator, data: []const u8, original_size: ?usize) CompressionError![]u8 {
+pub fn decompress(self: *Zstd, allocator: std.mem.Allocator, data: []const u8, original_size: ?usize) CompressionError![]u8 {
     _ = self;
     _ = original_size; // ZSTD can determine size from frame
 
@@ -70,22 +70,22 @@ pub fn decompress(self: *ZstdAlgorithm, allocator: std.mem.Allocator, data: []co
     return try allocator.realloc(buffer, result_size);
 }
 
-pub fn getBound(self: *ZstdAlgorithm, input_size: usize) usize {
+pub fn getBound(self: *Zstd, input_size: usize) usize {
     _ = self;
     return zstd_c.ZSTD_compressBound(input_size);
 }
 
-pub fn getId(self: *ZstdAlgorithm) u8 {
+pub fn getId(self: *Zstd) u8 {
     _ = self;
     return ALGORITHM_ID;
 }
 
-pub fn getName(self: *ZstdAlgorithm) []const u8 {
+pub fn getName(self: *Zstd) []const u8 {
     _ = self;
     return NAME;
 }
 
-pub fn detectFormat(self: *ZstdAlgorithm, data: []const u8) bool {
+pub fn detectFormat(self: *Zstd, data: []const u8) bool {
     _ = self;
     if (data.len < 4) return false;
     return std.mem.eql(u8, data[0..4], &MAGIC_NUMBER);

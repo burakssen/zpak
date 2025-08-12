@@ -1,7 +1,8 @@
 const std = @import("std");
 const algorithm = @import("algorithm.zig");
-const LZ4Algorithm = @import("lz4_algorithm.zig").LZ4Algorithm;
-const ZstdAlgorithm = @import("zstd_algorithm.zig").ZstdAlgorithm;
+const Lz4 = @import("lz4.zig");
+const Zstd = @import("zstd.zig");
+const Lzma = @import("lzma.zig");
 
 const IAlgorithm = algorithm.IAlgorithm;
 const CompressionError = algorithm.CompressionError;
@@ -12,15 +13,17 @@ algorithms: std.ArrayList(IAlgorithm),
 allocator: std.mem.Allocator,
 
 // Static instances of algorithms
-lz4_instance: LZ4Algorithm,
-zstd_instance: ZstdAlgorithm,
+lz4_instance: Lz4,
+zstd_instance: Zstd,
+lzma_instance: Lzma,
 
 pub fn init(allocator: std.mem.Allocator) AlgorithmRegistry {
     return .{
         .algorithms = std.ArrayList(IAlgorithm).init(allocator),
         .allocator = allocator,
-        .lz4_instance = LZ4Algorithm{},
-        .zstd_instance = ZstdAlgorithm{},
+        .lz4_instance = Lz4{},
+        .zstd_instance = Zstd{},
+        .lzma_instance = Lzma{},
     };
 }
 
@@ -31,6 +34,7 @@ pub fn deinit(self: *AlgorithmRegistry) void {
 pub fn registerDefaults(self: *AlgorithmRegistry) !void {
     try self.algorithms.append(IAlgorithm.init(&self.lz4_instance));
     try self.algorithms.append(IAlgorithm.init(&self.zstd_instance));
+    try self.algorithms.append(IAlgorithm.init(&self.lzma_instance));
 }
 
 pub fn getById(self: *AlgorithmRegistry, id: u8) ?IAlgorithm {

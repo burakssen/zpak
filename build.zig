@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
 
     zpak_mod.linkLibrary(lz4_dep.artifact("lz4"));
     zpak_mod.linkSystemLibrary("zstd", .{});
+    zpak_mod.linkSystemLibrary("lzma", .{});
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/cli/main.zig"),
