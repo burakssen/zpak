@@ -1,108 +1,80 @@
 const std = @import("std");
-const Encoder = @import("zpak").Encoder;
-const Decoder = @import("zpak").Decoder;
+const zpak = @import("zpak");
+const Encoder = zpak.Encoder;
+const Decoder = zpak.Decoder;
+const CompressionLevel = zpak.core.Compression.CompressionLevel;
 
-const ArgumentType = @import("zarg").ArgumentType;
-const Zarg = @import("zarg").Zarg;
+const UsageError = error{InvalidArgs};
 
-const MyError = error{InvalidInput};
+fn printUsage() void {
+    _ = std.io.getStdErr().writer().print(
+        \\Usage:
+        \\  zpak encode <input_dir> <output_file> [--algo <lz4|zstd|lzma|brotli>] [--level <low|medium|high>]
+        \\  zpak decode <archive_file> <output_dir>
+        \\
+    , .{}) catch {};
+}
 
-const MainArgs = enum {
-    help,
-    pub fn argType(self: @This()) ArgumentType {
-        return switch (self) {
-            .help => .Bool,
-        };
+fn parseLevel(s: []const u8) ?CompressionLevel {
+    inline for (.{ .low, .medium, .high }) |lvl| {
+        if (std.ascii.eqlIgnoreCase(s, @tagName(lvl))) return lvl;
     }
-};
+    return null;
+}
 
-const EncodeArgs = enum {
-    input_dir,
-    output_file,
-    algorithm,
-    pub fn argType(self: @This()) ArgumentType {
-        return switch (self) {
-            .input_dir => .String,
-            .output_file => .String,
-            .algorithm => .String,
-        };
-    }
-};
-
-const DecodeArgs = enum {
-    input_file,
-    output_dir,
-    pub fn argType(self: @This()) ArgumentType {
-        return switch (self) {
-            .input_file => .String,
-            .output_dir => .String,
-        };
-    }
-};
+fn expectArg(it: *std.process.ArgIterator, msg: []const u8) ![]const u8 {
+    return it.next() orelse {
+        std.log.err("{s}", .{msg});
+        printUsage();
+        return UsageError.InvalidArgs;
+    };
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer {
-        const status = gpa.deinit();
-        switch (status) {
-            .ok => std.log.info("Allocator deinitialized successfully", .{}),
-            .leak => std.log.err("Memory leak detected during allocator deinit", .{}),
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    var it = try std.process.argsWithAllocator(alloc);
+    defer it.deinit();
+    _ = it.next(); // skip program name
+
+    const cmd = try expectArg(&it, "Missing command");
+
+    if (std.mem.eql(u8, cmd, "encode")) {
+        const input = try expectArg(&it, "Missing input dir");
+        const output = try expectArg(&it, "Missing output file");
+
+        var algo: []const u8 = "lz4";
+        var level: CompressionLevel = .medium;
+
+        while (it.next()) |arg| {
+            if (std.mem.eql(u8, arg, "--algo")) {
+                algo = try expectArg(&it, "Missing algo value");
+            } else if (std.mem.eql(u8, arg, "--level")) {
+                const lvl = try expectArg(&it, "Missing level value");
+                level = parseLevel(lvl) orelse {
+                    std.log.err("Unknown level: {s}", .{lvl});
+                    return UsageError.InvalidArgs;
+                };
+            } else {
+                std.log.warn("Ignoring unknown arg: {s}", .{arg});
+            }
         }
+
+        var enc = try Encoder.init(alloc);
+        defer enc.deinit();
+        try enc.encodeDirWithAlgorithm(input, output, algo, level);
+    } else if (std.mem.eql(u8, cmd, "decode")) {
+        const archive = try expectArg(&it, "Missing archive file");
+        const outdir = try expectArg(&it, "Missing output dir");
+
+        var dec = try Decoder.init(alloc);
+        defer dec.deinit();
+        try dec.decodeDir(archive, outdir);
+    } else {
+        std.log.err("Unknown command: {s}", .{cmd});
+        printUsage();
+        return UsageError.InvalidArgs;
     }
-
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
-
-    var zarg = try Zarg(MainArgs).init(allocator);
-    defer zarg.deinit();
-
-    var encode_parser = try Zarg(EncodeArgs).init(allocator);
-    defer encode_parser.deinit();
-
-    var decode_parser = try Zarg(DecodeArgs).init(allocator);
-    defer decode_parser.deinit();
-
-    try zarg.addSubcommand("encode", &encode_parser);
-    try zarg.addSubcommand("decode", &decode_parser);
-
-    var argv = std.ArrayList([:0]u8).init(allocator);
-    defer {
-        for (argv.items) |item| {
-            allocator.free(item);
-        }
-        argv.deinit();
-    }
-
-    while (args.next()) |arg| {
-        const arg_str = try std.mem.concatWithSentinel(allocator, u8, &.{arg}, 0);
-        try argv.append(arg_str);
-    }
-
-    try zarg.parse(argv.items);
-
-    if (zarg.getValue(.help)) |_| {
-        zarg.printHelp();
-    }
-
-    _ = try zarg.on("encode", Zarg(EncodeArgs), struct {
-        pub fn handler(z: *Zarg(EncodeArgs), alloc: std.mem.Allocator) !void {
-            var encoder = try Encoder.init(alloc);
-            defer encoder.deinit();
-            encoder.setDefaultAlgorithm(z.getValue(.algorithm) orelse "lz4");
-            const input_dir = z.getValue(.input_dir) orelse return error.InvalidInput;
-            const output_file = z.getValue(.output_file) orelse return error.InvalidInput;
-            try encoder.encodeDir(input_dir, output_file);
-        }
-    });
-
-    _ = try zarg.on("decode", Zarg(DecodeArgs), struct {
-        pub fn handler(z: *Zarg(DecodeArgs), alloc: std.mem.Allocator) !void {
-            var decoder = try Decoder.init(alloc);
-            defer decoder.deinit();
-            const input_file = z.getValue(.input_file) orelse return error.InvalidInput;
-            const output_dir = z.getValue(.output_dir) orelse return error.InvalidInput;
-            try decoder.decodeDir(input_file, output_dir);
-        }
-    });
 }
