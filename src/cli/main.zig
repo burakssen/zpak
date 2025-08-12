@@ -106,15 +106,3 @@ pub fn main() !void {
         }
     });
 }
-
-fn printHelp() void {
-    std.log.info("Usage: zpak <command> [options]", .{});
-    std.log.info("Commands:", .{});
-    std.log.info("  encode <input_dir> <output_file> [algorithm]", .{});
-    std.log.info("    algorithms: lz4, zstd, zlib (default: lz4)", .{});
-    std.log.info("  decode <input_file> <output_dir>", .{});
-    std.log.info("", .{});
-    std.log.info("Examples:", .{});
-    std.log.info("  zpak encode my_folder archive.zpak zstd", .{});
-    std.log.info("  zpak decode archive.zpak extracted_folder", .{});
-}
