@@ -22,6 +22,11 @@ pub fn build(b: *std.Build) void {
     zpak_mod.linkSystemLibrary("brotlidec", .{});
     zpak_mod.linkSystemLibrary("brotlienc", .{});
 
+    const zarg_dep = b.dependency("zarg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/cli/main.zig"),
         .target = target,
@@ -29,6 +34,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe_mod.addImport("zpak", zpak_mod);
+    exe_mod.addImport("zarg", zarg_dep.module("zarg"));
 
     const lib = b.addLibrary(.{
         .linkage = .static,

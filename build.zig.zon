@@ -40,6 +40,10 @@
             .url = "git+https://github.com/allyourcodebase/lz4.git?ref=1.10.0-5#873969ee73aecb3c35203feaf0b5727b9d02b864",
             .hash = "lz4-1.10.0-5-ewyzw7YNAADOUkQ7M9fjW005oGzxt9b6m0uPd_kQC48z",
         },
+        .zarg = .{
+            .url = "git+https://github.com/burakssen/zarg.git#89c128c183e5d4e36808854c2716ff0430cc431f",
+            .hash = "zarg-0.0.0-NE-M4UZSAAD16Sxgqgj5i4ylmkub9CTi2NfoSemvkotm",
+        },
     },
     .paths = .{
         "build.zig",

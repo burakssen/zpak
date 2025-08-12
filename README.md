@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Efficient Compression**: Supports LZ4, Zstd and Lzma compression algorithms.
+- **Efficient Compression**: Supports LZ4, Zstd, Lzma and Brotli compression algorithms.
 - **Fast Archiving**: Quickly packs directories into compact archive files.
 - **Simple CLI**: Minimal, intuitive commands for encoding and decoding.
 - **Cross-Platform**: Built with Zig, ensuring portability across various operating systems.

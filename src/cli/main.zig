@@ -1,7 +1,44 @@
 const std = @import("std");
 const Encoder = @import("zpak").Encoder;
 const Decoder = @import("zpak").Decoder;
+
+const ArgumentType = @import("zarg").ArgumentType;
+const Zarg = @import("zarg").Zarg;
+
 const MyError = error{InvalidInput};
+
+const MainArgs = enum {
+    help,
+    pub fn argType(self: @This()) ArgumentType {
+        return switch (self) {
+            .help => .Bool,
+        };
+    }
+};
+
+const EncodeArgs = enum {
+    input_dir,
+    output_file,
+    algorithm,
+    pub fn argType(self: @This()) ArgumentType {
+        return switch (self) {
+            .input_dir => .String,
+            .output_file => .String,
+            .algorithm => .String,
+        };
+    }
+};
+
+const DecodeArgs = enum {
+    input_file,
+    output_dir,
+    pub fn argType(self: @This()) ArgumentType {
+        return switch (self) {
+            .input_file => .String,
+            .output_dir => .String,
+        };
+    }
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -17,64 +54,57 @@ pub fn main() !void {
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
 
-    // Skip program name
-    _ = args.next();
-    const command = args.next();
-    const first_arg = args.next();
-    const second_arg = args.next();
-    const algorithm_arg = args.next();
+    var zarg = try Zarg(MainArgs).init(allocator);
+    defer zarg.deinit();
 
-    if (command) |cmd| {
-        if (std.mem.eql(u8, cmd, "encode")) {
-            if (first_arg == null or second_arg == null) {
-                std.log.err("Usage: encode <input_dir> <output_file> [algorithm]", .{});
-                return MyError.InvalidInput;
-            }
+    var encode_parser = try Zarg(EncodeArgs).init(allocator);
+    defer encode_parser.deinit();
 
-            var encoder = try Encoder.init(allocator);
-            defer encoder.deinit();
+    var decode_parser = try Zarg(DecodeArgs).init(allocator);
+    defer decode_parser.deinit();
 
-            // Set the algorithm if provided
-            if (algorithm_arg) |algo| {
-                if (std.mem.eql(u8, algo, "zstd")) {
-                    encoder.setDefaultAlgorithm("zstd");
-                } else if (std.mem.eql(u8, algo, "lz4")) {
-                    encoder.setDefaultAlgorithm("lz4");
-                } else if (std.mem.eql(u8, algo, "zlib")) {
-                    encoder.setDefaultAlgorithm("zlib");
-                } else if (std.mem.eql(u8, algo, "lzma")) {
-                    encoder.setDefaultAlgorithm("lzma");
-                } else if (std.mem.eql(u8, algo, "brotli")) {
-                    encoder.setDefaultAlgorithm("brotli");
-                } else {
-                    std.log.err("Unknown algorithm: {s}. Available: lz4, zstd, zlib", .{algo});
-                    return MyError.InvalidInput;
-                }
-            }
+    try zarg.addSubcommand("encode", &encode_parser);
+    try zarg.addSubcommand("decode", &decode_parser);
 
-            // Encode the directory
-            try encoder.encodeDir(first_arg.?, second_arg.?);
-            std.log.info("Successfully encoded directory '{s}' to '{s}'", .{ first_arg.?, second_arg.? });
-        } else if (std.mem.eql(u8, cmd, "decode")) {
-            if (first_arg == null or second_arg == null) {
-                std.log.err("Usage: decode <input_file> <output_dir>", .{});
-                return MyError.InvalidInput;
-            }
-
-            var decoder = try Decoder.init(allocator);
-            defer decoder.deinit();
-            try decoder.decodeDir(first_arg.?, second_arg.?);
-            std.log.info("Successfully decoded '{s}' to directory '{s}'", .{ first_arg.?, second_arg.? });
-        } else {
-            std.log.err("Unknown command: {s}", .{cmd});
-            printHelp();
-            return MyError.InvalidInput;
+    var argv = std.ArrayList([:0]u8).init(allocator);
+    defer {
+        for (argv.items) |item| {
+            allocator.free(item);
         }
-    } else {
-        std.log.warn("No command provided", .{});
-        printHelp();
-        return MyError.InvalidInput;
+        argv.deinit();
     }
+
+    while (args.next()) |arg| {
+        const arg_str = try std.mem.concatWithSentinel(allocator, u8, &.{arg}, 0);
+        try argv.append(arg_str);
+    }
+
+    try zarg.parse(argv.items);
+
+    if (zarg.getValue(.help)) |_| {
+        zarg.printHelp();
+    }
+
+    _ = try zarg.on("encode", Zarg(EncodeArgs), struct {
+        pub fn handler(z: *Zarg(EncodeArgs), alloc: std.mem.Allocator) !void {
+            var encoder = try Encoder.init(alloc);
+            defer encoder.deinit();
+            encoder.setDefaultAlgorithm(z.getValue(.algorithm) orelse "lz4");
+            const input_dir = z.getValue(.input_dir) orelse return error.InvalidInput;
+            const output_file = z.getValue(.output_file) orelse return error.InvalidInput;
+            try encoder.encodeDir(input_dir, output_file);
+        }
+    });
+
+    _ = try zarg.on("decode", Zarg(DecodeArgs), struct {
+        pub fn handler(z: *Zarg(DecodeArgs), alloc: std.mem.Allocator) !void {
+            var decoder = try Decoder.init(alloc);
+            defer decoder.deinit();
+            const input_file = z.getValue(.input_file) orelse return error.InvalidInput;
+            const output_dir = z.getValue(.output_dir) orelse return error.InvalidInput;
+            try decoder.decodeDir(input_file, output_dir);
+        }
+    });
 }
 
 fn printHelp() void {
