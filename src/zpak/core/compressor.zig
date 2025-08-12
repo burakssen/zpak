@@ -31,7 +31,7 @@ pub fn deinit(self: *Compressor) void {
 }
 
 pub fn compress(self: *Compressor, data: []const u8) CompressionError!CompressionResult {
-    return self.compressWithName(data, "LZ4", .medium);
+    return self.compressWithName(data, "lz4", .medium);
 }
 
 pub fn compressWithId(self: *Compressor, data: []const u8, algorithm_id: u8, level: CompressionLevel) CompressionError!CompressionResult {

@@ -35,7 +35,7 @@ pub fn init(allocator: std.mem.Allocator) EncoderError!Encoder {
         .serializer = Serializer.init(allocator),
         .compressor = try Compressor.init(allocator),
         .file_utils = FileUtils.init(allocator),
-        .default_algorithm = "LZ4",
+        .default_algorithm = "lz4",
         .default_level = .medium,
     };
 }
@@ -95,7 +95,7 @@ pub fn encodeDirWithAlgorithm(self: *Encoder, input_path: []const u8, output_pat
 pub fn getCompressionInfo(self: *Encoder) struct {
     default_algorithm: []const u8,
     default_level: compression.CompressionLevel,
-    available_algorithms: []compression.ICompressionAlgorithm,
+    available_algorithms: []compression.IAlgorithm,
 } {
     return .{
         .default_algorithm = self.default_algorithm,

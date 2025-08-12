@@ -3,6 +3,7 @@ const algorithm = @import("algorithm.zig");
 const Lz4 = @import("lz4.zig");
 const Zstd = @import("zstd.zig");
 const Lzma = @import("lzma.zig");
+const Brotli = @import("brotli.zig");
 
 const IAlgorithm = algorithm.IAlgorithm;
 const CompressionError = algorithm.CompressionError;
@@ -16,6 +17,7 @@ allocator: std.mem.Allocator,
 lz4_instance: Lz4,
 zstd_instance: Zstd,
 lzma_instance: Lzma,
+brotli_instance: Brotli,
 
 pub fn init(allocator: std.mem.Allocator) AlgorithmRegistry {
     return .{
@@ -24,6 +26,7 @@ pub fn init(allocator: std.mem.Allocator) AlgorithmRegistry {
         .lz4_instance = Lz4{},
         .zstd_instance = Zstd{},
         .lzma_instance = Lzma{},
+        .brotli_instance = Brotli{},
     };
 }
 
@@ -35,6 +38,7 @@ pub fn registerDefaults(self: *AlgorithmRegistry) !void {
     try self.algorithms.append(IAlgorithm.init(&self.lz4_instance));
     try self.algorithms.append(IAlgorithm.init(&self.zstd_instance));
     try self.algorithms.append(IAlgorithm.init(&self.lzma_instance));
+    try self.algorithms.append(IAlgorithm.init(&self.brotli_instance));
 }
 
 pub fn getById(self: *AlgorithmRegistry, id: u8) ?IAlgorithm {

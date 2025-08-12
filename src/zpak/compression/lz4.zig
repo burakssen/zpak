@@ -91,7 +91,7 @@ pub fn getName(self: *Lz4) []const u8 {
 
 pub fn detectFormat(self: *Lz4, data: []const u8) bool {
     _ = self;
-    // LZ4 doesn't have a magic header, so we'll use this as a fallback
-    // or implement a heuristic based on data patterns
-    return data.len > 0;
+    // LZ4 doesn't have a reliable magic header for raw frames; avoid false positives.
+    _ = data;
+    return false;
 }

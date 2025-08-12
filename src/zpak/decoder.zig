@@ -99,9 +99,9 @@ pub fn listArchiveContents(self: *Decoder, archive_path: []const u8) DecoderErro
     const algorithm_info = try self.detectArchiveAlgorithm(compressed_data);
 
     const decompressed = try self.compressor.decompressWithName(compressed_data, algorithm_info.name, null);
-    defer self.allocator.free(decompressed.data);
+    defer self.allocator.free(decompressed);
 
-    var archive = try self.parseArchive(decompressed.data);
+    var archive = try self.parseArchive(decompressed);
     defer archive.deinit();
 
     var result = std.ArrayList(u8).init(self.allocator);
@@ -139,15 +139,15 @@ pub fn extractSingleFile(self: *Decoder, archive_path: []const u8, file_path: []
     const algorithm_info = try self.detectArchiveAlgorithm(compressed_data);
 
     const decompressed = try self.compressor.decompressWithName(compressed_data, algorithm_info.name, null);
-    defer self.allocator.free(decompressed.data);
+    defer self.allocator.free(decompressed);
 
-    var archive = try self.parseArchive(decompressed.data);
+    var archive = try self.parseArchive(decompressed);
     defer archive.deinit();
 
     // Find the requested file
     for (archive.manifest.entries) |entry| {
         if (std.mem.eql(u8, entry.original_path, file_path)) {
-            try self.extractSingleEntry(&entry, decompressed.data, output_path);
+            try self.extractSingleEntry(&entry, decompressed, output_path);
             log.info("Extracted: {s} -> {s}", .{ file_path, output_path });
             return;
         }
@@ -179,9 +179,9 @@ pub fn verifyArchive(self: *Decoder, archive_path: []const u8) DecoderError!bool
         log.warn("Failed to decompress archive: {}", .{err});
         return false;
     };
-    defer self.allocator.free(decompressed.data);
+    defer self.allocator.free(decompressed);
 
-    var archive = self.parseArchive(decompressed.data) catch |err| {
+    var archive = self.parseArchive(decompressed) catch |err| {
         log.warn("Failed to parse archive: {}", .{err});
         return false;
     };
@@ -189,7 +189,7 @@ pub fn verifyArchive(self: *Decoder, archive_path: []const u8) DecoderError!bool
 
     // Verify all file checksums
     const MANIFEST_SIZE_BYTES = 8;
-    const manifest_size = std.mem.readInt(u64, decompressed.data[0..MANIFEST_SIZE_BYTES][0..8], .little);
+    const manifest_size = std.mem.readInt(u64, decompressed[0..MANIFEST_SIZE_BYTES][0..8], .little);
     const data_start = MANIFEST_SIZE_BYTES + manifest_size;
 
     for (archive.manifest.entries) |entry| {
@@ -204,12 +204,12 @@ pub fn verifyArchive(self: *Decoder, archive_path: []const u8) DecoderError!bool
         };
 
         const actual_offset = data_start + offset;
-        if (actual_offset + entry.original_size > decompressed.data.len) {
+        if (actual_offset + entry.original_size > decompressed.len) {
             log.warn("Invalid file bounds for {s}", .{entry.original_path});
             return false;
         }
 
-        const file_data = decompressed.data[actual_offset .. actual_offset + entry.original_size];
+        const file_data = decompressed[actual_offset .. actual_offset + entry.original_size];
         if (std.hash.Crc32.hash(file_data) != entry.checksum) {
             log.warn("Checksum mismatch for {s}", .{entry.original_path});
             return false;
@@ -228,9 +228,22 @@ fn detectArchiveAlgorithm(self: *Decoder, compressed_data: []const u8) DecoderEr
     // Try common algorithms in order of preference
     const algorithms = self.compressor.listAvailableAlgorithms();
 
+    // 1) Try Brotli first (common for .zpak in some setups)
     for (algorithms) |algo| {
+        if (std.mem.eql(u8, algo.getName(), "brotli")) {
+            if (self.compressor.decompressWithName(compressed_data, algo.getName(), null)) |result| {
+                self.allocator.free(result);
+                return .{ .name = algo.getName(), .level = .medium };
+            } else |_| {}
+            break; // tried brotli already
+        }
+    }
+
+    // 2) Try remaining algorithms
+    for (algorithms) |algo| {
+        if (std.mem.eql(u8, algo.getName(), "brotli")) continue; // already tried
         // Try to decompress with each algorithm to see if it works
-        if (self.compressor.decompressWithName(compressed_data, algo.getName(), compressed_data.len)) |result| {
+        if (self.compressor.decompressWithName(compressed_data, algo.getName(), null)) |result| {
             self.allocator.free(result);
             return .{ .name = algo.getName(), .level = .medium };
         } else |_| {
@@ -239,7 +252,8 @@ fn detectArchiveAlgorithm(self: *Decoder, compressed_data: []const u8) DecoderEr
     }
 
     // Default fallback
-    return .{ .name = "LZ4", .level = .medium };
+    // Fallback to a sensible default (must match registry naming/casing)
+    return .{ .name = "lz4", .level = .medium };
 }
 
 fn deserialize(self: *Decoder, comptime T: type, data: []const u8) DecoderError!T {

@@ -20,7 +20,7 @@ pub fn compress(_: *Lzma, allocator: std.mem.Allocator, data: []const u8, level:
 
     const preset: c_uint = switch (level) {
         .low => 1,
-        .medium => 5,
+        .medium => 3, // slightly lower for better speed
         .high => 9,
     };
 
@@ -28,20 +28,51 @@ pub fn compress(_: *Lzma, allocator: std.mem.Allocator, data: []const u8, level:
         return error.CompressionFailed;
     }
 
-    // Over-allocate: compressed data <= input + overhead
-    const out_buf = try allocator.alloc(u8, data.len + 1024);
-    errdefer allocator.free(out_buf);
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
 
-    stream.next_in = data.ptr;
-    stream.avail_in = @intCast(data.len);
+    const chunk_size: usize = 64 * 1024;
+    const in_left: usize = data.len;
+    const in_next: [*]const u8 = data.ptr;
 
-    stream.next_out = out_buf.ptr;
-    stream.avail_out = @intCast(out_buf.len);
+    var out_avail: usize = 0;
+    var out_next: [*]u8 = undefined;
 
-    const ret = lzma_c.lzma_code(&stream, lzma_c.LZMA_FINISH);
-    if (ret != lzma_c.LZMA_STREAM_END) return error.CompressionFailed;
+    stream.next_in = in_next;
+    stream.avail_in = @intCast(in_left);
 
-    return try allocator.realloc(out_buf, out_buf.len - stream.avail_out);
+    while (true) {
+        if (out_avail == 0) {
+            const start_len = out.items.len;
+            try out.resize(start_len + chunk_size);
+            out_avail = chunk_size;
+            out_next = out.items.ptr + start_len;
+        }
+
+        stream.next_out = out_next;
+        stream.avail_out = @intCast(out_avail);
+
+        const ret = lzma_c.lzma_code(&stream, lzma_c.LZMA_FINISH);
+
+        // Update out pointers based on how much was written
+        const produced_now = out_avail - @as(usize, @intCast(stream.avail_out));
+        out_avail -= produced_now;
+        out_next += produced_now;
+
+        switch (ret) {
+            lzma_c.LZMA_OK => {
+                // Need more output space; loop will allocate more
+                if (stream.avail_out == 0) continue;
+            },
+            lzma_c.LZMA_STREAM_END => {
+                // Trim to produced size and return
+                const produced_total = out.items.len - out_avail;
+                try out.resize(produced_total);
+                return out.toOwnedSlice();
+            },
+            else => return error.CompressionFailed,
+        }
+    }
 }
 
 pub fn decompress(_: *Lzma, allocator: std.mem.Allocator, data: []const u8, original_size: ?usize) CompressionError![]u8 {
@@ -53,20 +84,55 @@ pub fn decompress(_: *Lzma, allocator: std.mem.Allocator, data: []const u8, orig
         return error.DecompressionFailed;
     }
 
-    const alloc_size = original_size orelse (data.len * 3); // heuristic
-    const out_buf = try allocator.alloc(u8, alloc_size);
-    errdefer allocator.free(out_buf);
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
 
-    stream.next_in = data.ptr;
-    stream.avail_in = @intCast(data.len);
+    const chunk_size: usize = 64 * 1024;
+    if (original_size) |hint| {
+        // Pre-reserve to reduce reallocations when size is known
+        try out.ensureTotalCapacity(@intCast(@max(hint, chunk_size)));
+        try out.resize(0);
+    }
 
-    stream.next_out = out_buf.ptr;
-    stream.avail_out = @intCast(out_buf.len);
+    const in_left: usize = data.len;
+    const in_next: [*]const u8 = data.ptr;
 
-    const ret = lzma_c.lzma_code(&stream, lzma_c.LZMA_FINISH);
-    if (ret != lzma_c.LZMA_STREAM_END) return error.DecompressionFailed;
+    var out_avail: usize = 0;
+    var out_next: [*]u8 = undefined;
 
-    return try allocator.realloc(out_buf, out_buf.len - stream.avail_out);
+    stream.next_in = in_next;
+    stream.avail_in = @intCast(in_left);
+
+    while (true) {
+        if (out_avail == 0) {
+            const start_len = out.items.len;
+            try out.resize(start_len + chunk_size);
+            out_avail = chunk_size;
+            out_next = out.items.ptr + start_len;
+        }
+
+        stream.next_out = out_next;
+        stream.avail_out = @intCast(out_avail);
+
+        const ret = lzma_c.lzma_code(&stream, lzma_c.LZMA_RUN);
+
+        const produced_now = out_avail - @as(usize, @intCast(stream.avail_out));
+        out_avail -= produced_now;
+        out_next += produced_now;
+
+        switch (ret) {
+            lzma_c.LZMA_OK => {
+                // Need more output space or more input; loop continues
+                continue;
+            },
+            lzma_c.LZMA_STREAM_END => {
+                const produced_total = out.items.len - out_avail;
+                try out.resize(produced_total);
+                return out.toOwnedSlice();
+            },
+            else => return error.DecompressionFailed,
+        }
+    }
 }
 
 pub fn getBound(_: *Lzma, input_size: usize) usize {
