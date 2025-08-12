@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Efficient Compression**: Supports LZ4 and Zstd compression algorithms.
+- **Efficient Compression**: Supports LZ4, Zstd and Lzma compression algorithms.
 - **Fast Archiving**: Quickly packs directories into compact archive files.
 - **Simple CLI**: Minimal, intuitive commands for encoding and decoding.
 - **Cross-Platform**: Built with Zig, ensuring portability across various operating systems.
@@ -59,7 +59,6 @@ zpak decode assets.zpak extracted_assets
 
 ### Notes
 
-- If you omit the compression algorithm when encoding, LZ4 is used by default.
 - Incorrect usage will print a help message with the correct command format.
 
 ### Licence
